@@ -40,17 +40,17 @@ DC2008：
 
 网络配置
 
-![image-20220316174256681](READMD/image-20220316174256681.png)
+![image-20220316174256681](README/image-20220316174256681.png)
 
 添加服务器角色：
 
-![image-20220316174530574](READMD/image-20220316174530574.png)
+![image-20220316174530574](README/image-20220316174530574.png)
 
 配置域服务(在administrator用户下。。)：
 
 dos下：`dcpromo`
 
-![image-20220316174748182](READMD/image-20220316174748182.png)
+![image-20220316174748182](README/image-20220316174748182.png)
 
 提示错误的话，管理员cmd`net user administrator /passwordreq:yes`
 
@@ -60,11 +60,11 @@ dos下：`dcpromo`
 
 林就是在多域情况下形成的森林,根表示基础,其他在此根部衍生
 
-![image-20220316182106728](READMD/image-20220316182106728.png)
+![image-20220316182106728](README/image-20220316182106728.png)
 
 域数据存放的地址：
 
-![image-20220316182303660](READMD/image-20220316182303660.png)
+![image-20220316182303660](README/image-20220316182303660.png)
 
 密码还是设置为Admin123!
 
@@ -72,9 +72,9 @@ dos下：`dcpromo`
 
 配置的dns要设置为主域控的ip：192.168.188.100
 
-![image-20220316183849046](READMD/image-20220316183849046.png)
+![image-20220316183849046](README/image-20220316183849046.png)
 
-![image-20220316184043460](READMD/image-20220316184043460.png)
+![image-20220316184043460](README/image-20220316184043460.png)
 
 # 3.端口转发&边界代理
 
